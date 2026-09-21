@@ -1,169 +1,124 @@
-const https = require('https');
-
+// Indicatori Tecnici
 function calculateRSI(prices, period = 14) {
   if (prices.length < period + 1) return null;
   let gains = 0, losses = 0;
   for (let i = prices.length - period; i < prices.length; i++) {
-    const diff = prices[i] - prices[i - 1];
+    let diff = prices[i] - prices[i - 1];
     if (diff > 0) gains += diff;
     else losses += -diff;
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-  const rs = avgGain / avgLoss;
-  const rsi = 100 - (100 / (1 + rs));
-  return Math.round(rsi * 100) / 100;
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  let rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
 
 function calculateEMA(prices, period) {
   if (prices.length < period) return null;
-  const multiplier = 2 / (period + 1);
+  let multiplier = 2 / (period + 1);
   let ema = prices.slice(0, period).reduce((a, b) => a + b) / period;
   for (let i = period; i < prices.length; i++) {
     ema = (prices[i] - ema) * multiplier + ema;
   }
-  return Math.round(ema * 100) / 100;
+  return ema;
 }
 
 function calculateMACD(prices) {
   if (prices.length < 26) return null;
-  const ema12 = calculateEMA(prices, 12);
-  const ema26 = calculateEMA(prices, 26);
-  const macdLine = ema12 - ema26;
-  return {
-    macd: Math.round(macdLine * 10000) / 10000,
-    signal: Math.round(macdLine * 100) / 100,
-    histogram: Math.round((macdLine * 0.3) * 10000) / 10000
-  };
+  let ema12 = calculateEMA(prices, 12);
+  let ema26 = calculateEMA(prices, 26);
+  let macd = ema12 - ema26;
+  return { macd, signal: macd };
 }
 
-function calculateBollingerBands(prices, period = 20, stdDevs = 2) {
+function calculateBollinger(prices, period = 20) {
   if (prices.length < period) return null;
-  const lastPrices = prices.slice(-period);
-  const sma = lastPrices.reduce((a, b) => a + b) / period;
-  const variance = lastPrices.reduce((sum, price) => sum + Math.pow(price - sma, 2), 0) / period;
-  const stdDev = Math.sqrt(variance);
+  let lastPrices = prices.slice(-period);
+  let sma = lastPrices.reduce((a, b) => a + b) / period;
+  let variance = lastPrices.reduce((sum, price) => sum + Math.pow(price - sma, 2), 0) / period;
+  let stdDev = Math.sqrt(variance);
   return {
-    upper: Math.round((sma + stdDevs * stdDev) * 100) / 100,
-    middle: Math.round(sma * 100) / 100,
-    lower: Math.round((sma - stdDevs * stdDev) * 100) / 100
+    upper: sma + 2 * stdDev,
+    middle: sma,
+    lower: sma - 2 * stdDev
   };
 }
 
-function calculateATR(highs, lows, closes, period = 14) {
-  if (highs.length < period) return null;
-  const trueRanges = [];
-  for (let i = 1; i < closes.length; i++) {
-    const tr = Math.max(
-      highs[i] - lows[i],
-      Math.abs(highs[i] - closes[i - 1]),
-      Math.abs(lows[i] - closes[i - 1])
-    );
-    trueRanges.push(tr);
-  }
-  const atr = trueRanges.slice(-period).reduce((a, b) => a + b) / period;
-  return Math.round(atr * 100) / 100;
+// Fetch Kucoin
+async function getKuCoinCandles(symbol, timeframe) {
+  let type = timeframe;
+  let url = `https://api.kucoin.com/api/v1/market/candles?symbol=${symbol}&type=${type}`;
+  let res = await fetch(url);
+  let json = await res.json();
+  if (!json.data) throw new Error('No data from Kucoin');
+  return json.data.map(c => ({
+    time: parseInt(c[0]),
+    open: parseFloat(c[1]),
+    close: parseFloat(c[2]),
+    high: parseFloat(c[3]),
+    low: parseFloat(c[4]),
+    volume: parseFloat(c[5])
+  }));
 }
 
-function calculateStochastic(highs, lows, closes, period = 14) {
-  if (closes.length < period) return null;
-  const lastHigh = Math.max(...highs.slice(-period));
-  const lastLow = Math.min(...lows.slice(-period));
-  const k = ((closes[closes.length - 1] - lastLow) / (lastHigh - lastLow)) * 100;
-  return Math.round(k * 100) / 100;
-}
-
-function getKuCoinCandles(symbol, timeframe) {
-  return new Promise((resolve, reject) => {
-    const url = `https://api.kucoin.com/api/v1/market/candles?symbol=${symbol}&type=${timeframe}`;
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          const candles = json.data.map(c => ({
-            time: parseInt(c[0]),
-            open: parseFloat(c[1]),
-            close: parseFloat(c[2]),
-            high: parseFloat(c[3]),
-            low: parseFloat(c[4]),
-            volume: parseFloat(c[5])
-          }));
-          resolve(candles);
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }).on('error', reject);
-  });
-}
-
+// Analisi
 async function analyzeMarket(symbol, timeframe) {
-  try {
-    const candles = await getKuCoinCandles(symbol, timeframe);
-    if (!candles || candles.length === 0) return { error: 'No data from KuCoin' };
-    
-    const closes = candles.map(c => c.close);
-    const highs = candles.map(c => c.high);
-    const lows = candles.map(c => c.low);
-    const volumes = candles.map(c => c.volume);
-    
-    const currentPrice = closes[closes.length - 1];
-    const rsi = calculateRSI(closes, 14);
-    const macd = calculateMACD(closes);
-    const bollinger = calculateBollingerBands(closes, 20, 2);
-    const atr = calculateATR(highs, lows, closes, 14);
-    const stochastic = calculateStochastic(highs, lows, closes, 14);
-    const ema20 = calculateEMA(closes, 20);
-    const ema50 = calculateEMA(closes, 50);
-    
-    let signal = 'NEUTRAL';
-    let signalStrength = 0;
-    
-    if (rsi < 30) signalStrength += 2;
-    if (rsi > 70) signalStrength -= 2;
-    if (macd && macd.histogram > 0) signalStrength += 1;
-    if (ema20 > ema50) signalStrength += 1;
-    
-    if (signalStrength >= 2) signal = 'BUY';
-    else if (signalStrength <= -2) signal = 'SELL';
-    
-    return {
-      symbol,
-      timeframe,
-      price: currentPrice,
-      indicators: {
-        rsi,
-        macd,
-        bollinger,
-        atr,
-        stochastic,
-        ema20,
-        ema50
-      },
-      signal,
-      signalStrength,
-      candles: candles.slice(-100),
-      timestamp: new Date().toISOString()
-    };
-  } catch (error) {
-    return { error: error.message };
-  }
+  let candles = await getKuCoinCandles(symbol, timeframe);
+  let closes = candles.map(c => c.close);
+  
+  let currentPrice = closes[closes.length - 1];
+  let rsi = calculateRSI(closes);
+  let ema20 = calculateEMA(closes, 20);
+  let ema50 = calculateEMA(closes, 50);
+  let macd = calculateMACD(closes);
+  let bb = calculateBollinger(closes);
+  
+  let signal = 'NEUTRAL';
+  let strength = 0;
+  
+  if (rsi < 30) strength += 2;
+  if (rsi > 70) strength -= 2;
+  if (macd.signal > 0) strength += 1;
+  if (ema20 > ema50) strength += 1;
+  
+  if (strength >= 2) signal = 'BUY';
+  else if (strength <= -2) signal = 'SELL';
+  
+  return {
+    symbol,
+    timeframe,
+    timestamp: new Date().toISOString(),
+    price: currentPrice,
+    rsi: Math.round(rsi * 100) / 100,
+    macd: {
+      value: Math.round(macd.macd * 10000) / 10000,
+      signal: macd.signal > 0 ? 'BULLISH' : 'BEARISH'
+    },
+    ema: { ema20, ema50 },
+    bollinger: bb,
+    signal,
+    strength,
+    candles: candles.slice(-10)
+  };
 }
 
-module.exports = async (req, res) => {
+// Handler Vercel
+export default async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Content-Type', 'application/json');
   
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
   
-  const { symbol = 'SOL-USDT', timeframe = '15min' } = req.query;
-  
-  const analysis = await analyzeMarket(symbol, timeframe);
-  res.status(200).json(analysis);
+  try {
+    const { symbol = 'SOL-USDT', timeframe = '15min' } = req.query;
+    const result = await analyzeMarket(symbol, timeframe);
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 };
